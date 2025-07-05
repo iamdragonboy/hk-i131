@@ -1532,7 +1532,7 @@ async def myshares(interaction: discord.Interaction):
 
     embed = discord.Embed(title="👥 Shared VPS Access", color=0x00aaff)
     for vps, users in shared_data.items():
-        display = "
+        display
 ".join(f"<@{uid}>" for uid in users)
         embed.add_field(name=f"📦 {vps}", value=display or "No users", inline=False)
 
