@@ -1461,13 +1461,12 @@ async def manage(interaction: discord.Interaction, container_name: str):
             await interaction2.response.send_message(f"VPS Status: {status}", ephemeral=True)
 
         @discord.ui.button(label="Get SSH Info", style=discord.ButtonStyle.secondary)
-        async def ssh_button(self, interaction2, button):
-            ssh = get_ssh_command_from_database(container_name)
-            if ssh:
-                await interaction2.response.send_message(f"🔑 SSH Command:
-```{ssh}```", ephemeral=True)
-            else:
-                await interaction2.response.send_message("No SSH session available.", ephemeral=True)
+async def ssh_button(self, interaction2, button):
+    ssh = get_ssh_command_from_database(container_name)
+    if ssh:
+        await interaction2.response.send_message(f"🔑 SSH Command:\n```{ssh}```", ephemeral=True)
+    else:
+        await interaction2.response.send_message("No SSH session available.", ephemeral=True)
 
     await interaction.response.send_message(embed=embed, view=ManageView(), ephemeral=True)
 
