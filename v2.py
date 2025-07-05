@@ -1452,7 +1452,6 @@ async def manage(interaction: discord.Interaction, container_name: str):
             stats = get_container_stats(container_name)
             embed = discord.Embed(
                 title=f"📊 VPS Usage for {container_name}",
-                description="CPU: {stats['cpu']}
 RAM: {stats['memory']}
 Status: {stats['status']}",
                 color=0x00ff00
