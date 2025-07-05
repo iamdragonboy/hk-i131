@@ -1452,11 +1452,8 @@ async def manage(interaction: discord.Interaction, container_name: str):
             stats = get_container_stats(container_name)
             embed = discord.Embed(
                 title=f"📊 VPS Usage for {container_name}",
-RAM: {stats['memory']}
-Status: {stats['status']}",
-                color=0x00ff00
-            )
-            await interaction2.response.send_message(embed=embed, ephemeral=True)
+         
+                await interaction2.response.send_message(embed=embed, ephemeral=True)
 
         @discord.ui.button(label="Status", style=discord.ButtonStyle.secondary)
         async def status_button(self, interaction2, button):
