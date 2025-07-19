@@ -1773,5 +1773,4 @@ async def manage(interaction: discord.Interaction, container_name: str):
     view = ManageView()
     await interaction.response.send_message(embed=embed, view=view)
 
-if __name__ == "__main__":
 bot.run(TOKEN)
