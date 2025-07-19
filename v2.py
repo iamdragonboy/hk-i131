@@ -71,9 +71,9 @@ def format_expiry_date(seconds_from_now):
     expiry_date = datetime.now() + timedelta(seconds=seconds_from_now)
     return expiry_date.strftime("%Y-%m-%d %H:%M:%S")
 
-def add_to_database(user, container_name, ssh_command, ram_limit=None, cpu_limit=None, disk_limit=None, creator=None, expiry=None, os_type="Ubuntu 22.04"):
+def add_to_database(user, container_name, ssh_command, ram_limit=None, cpu_limit=None, creator=None, expiry=None, os_type="Ubuntu 22.04", hostname=None):
     with open(database_file, 'a') as f:
-        f.write(f"{user}|{container_name}|{ssh_command}|{ram_limit or '2048'}|{cpu_limit or '1'}|{disk_limit or '968'}|{creator or user}|{os_type}|{expiry or 'None'}\n")
+        f.write(f"{user}|{container_name}|{ssh_command}|{ram_limit or '2048'}|{cpu_limit or '1'}|{creator or user}|{os_type}|{expiry or 'None'}|{hostname or 'None'}\n")
 
 def remove_from_database(container_id):
     if not os.path.exists(database_file):
@@ -120,26 +120,14 @@ def get_system_stats():
             total_mem = mem_values[1]
             used_mem = mem_values[2]
             
-        # Get disk usage
-        disk_usage = subprocess.check_output(["df", "-h", "/"]).decode().strip()
-        disk_lines = disk_usage.split('\n')
-        if len(disk_lines) >= 2:
-            disk_values = disk_lines[1].split()
-            total_disk = disk_values[1]
-            used_disk = disk_values[2]
-            
         return {
             "total_memory": f"{total_mem}MB",
-            "used_memory": f"{used_mem}MB",
-            "total_disk": total_disk,
-            "used_disk": used_disk
+            "used_memory": f"{used_mem}MB"
         }
     except Exception as e:
         return {
             "total_memory": "N/A",
             "used_memory": "N/A",
-            "total_disk": "N/A",
-            "used_disk": "N/A",
             "error": str(e)
         }
 
@@ -365,7 +353,7 @@ async def nodedmin(interaction: discord.Interaction):
             field_count = 0
         
         if len(parts) >= 9:
-            user, container_name, ssh_command, ram, cpu, disk, creator, os_type, expiry = parts
+            user, container_name, ssh_command, ram, cpu, creator, os_type, expiry, hostname = parts
             stats = get_container_stats(container_name)
             
             current_embed.add_field(
@@ -373,9 +361,9 @@ async def nodedmin(interaction: discord.Interaction):
                 value=f"🪩 **User:** {user}\n"
                       f"💾 **RAM:** {ram}GB\n"
                       f"🔥 **CPU:** {cpu} cores\n"
-                      f"💽 **Disk:** {disk}GB\n"
                       f"🌐 **OS:** {os_type}\n"
                       f"👑 **Creator:** {creator}\n"
+                      f"🏷️ **Hostname:** {hostname}\n"
                       f"🔑 **SSH:** `{ssh_command}`",
                 inline=False
             )
@@ -422,12 +410,6 @@ async def node_stats(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name="💾 Storage Usage",
-        value=f"Used: {system_stats['used_disk']} / Total: {system_stats['total_disk']}",
-        inline=False
-    )
-    
-    embed.add_field(
         name=f"🧊 VPS Instances ({len(containers)})",
         value="List of all VPS instances, their status, and resource usage:",
         inline=False
@@ -436,14 +418,16 @@ async def node_stats(interaction: discord.Interaction):
     for container_info in containers:
         parts = container_info.split('|')
         if len(parts) >= 9:
-            user, container_id, _, ram, cpu, disk, _, _, _ = parts
+            user, container_id, _, ram, cpu, _, os_type, expiry, hostname = parts
             stats = get_container_stats(container_id)
             embed.add_field(
                 name=f"{container_id} ({stats['status']})",
                 value=f"👤 **User:** {user}\n"
                       f"💾 **RAM:** {stats['memory']}\n"
                       f"🔥 **CPU:** {stats['cpu']}\n"
-                      f"💽 **Disk Limit:** {disk}GB",
+                      f"🌐 **OS:** {os_type}\n"
+                      f"🏷️ **Hostname:** {hostname}\n"
+                      f"⏱️ **Expires:** {expiry}",
                 inline=True
             )
         elif len(parts) >= 2:
@@ -883,19 +867,19 @@ async def port_forward_website(interaction: discord.Interaction, container_name:
 @app_commands.describe(
     ram="RAM allocation in GB (max 96gb)",
     cpu="CPU cores (max 12)",
-    disk="Disk space in GB (max 968gb)",
     target_user="Discord user ID to assign the VPS to",
     container_name="Custom container name (default: auto-generated)",
-    expiry="Time until expiry (e.g. 1d, 2h, 30m, 45s, 1y, 3M)"
+    expiry="Time until expiry (e.g. 1d, 2h, 30m, 45s, 1y, 3M)",
+    hostname="Custom hostname for the VPS"
 )
 async def deploy(
     interaction: discord.Interaction, 
     ram: int = 16, 
     cpu: int = 4, 
-    disk: int = 968,
     target_user: str = None,
     container_name: str = None,
-    expiry: str = None
+    expiry: str = None,
+    hostname: str = None
 ):
     if interaction.user.id not in ADMIN_IDS:
         embed = discord.Embed(
@@ -910,8 +894,6 @@ async def deploy(
         ram = 96000
     if cpu > 12:
         cpu = 12
-    if disk > 968:
-        disk = 968
     
     user_id = target_user if target_user else str(interaction.user.id)
     user = target_user if target_user else str(interaction.user)
@@ -931,19 +913,18 @@ async def deploy(
     )
     
     async def os_selected_callback(interaction, selected_os):
-        await deploy_with_os(interaction, selected_os, ram, cpu, disk, user_id, user, container_name, expiry_date)
+        await deploy_with_os(interaction, selected_os, ram, cpu, user_id, user, container_name, expiry_date, hostname)
     
     view = OSSelectView(os_selected_callback)
     await interaction.response.send_message(embed=embed, view=view)
 
-async def deploy_with_os(interaction, os_type, ram, cpu, disk, user_id, user, container_name, expiry_date):
+async def deploy_with_os(interaction, os_type, ram, cpu, user_id, user, container_name, expiry_date, hostname=None):
     embed = discord.Embed(
         title="🛠️ Creating VPS",
         description=f"💾 **RAM:** {ram}GB\n"
                     f"🔥 **CPU:** {cpu} cores\n"
-                    f"💽 **Disk:** {disk}GB\n"
                     f"🧊 **Container Name:** {container_name}\n"
-                    f"⌚ **Expiry:** {expiry_date if expiry_date else 'None'}",
+                    f"🏷️ **Hostname:** {hostname if hostname else 'Default'}",
         color=0x00ff00
     )
     await interaction.followup.send(embed=embed)
@@ -951,16 +932,19 @@ async def deploy_with_os(interaction, os_type, ram, cpu, disk, user_id, user, co
     image = get_docker_image_for_os(os_type)
     
     try:
-        container_id = subprocess.check_output([
+        container_args = [
             "docker", "run", "-itd", 
             "--privileged", 
             "--cap-add=ALL",
             f"--memory={ram}g",
             f"--cpus={cpu}",
-            f"--storage-opt=size={disk}G",
-            "--name", container_name,
-            image
-        ]).strip().decode('utf-8')
+            "--name", container_name
+        ]
+        if hostname:
+            container_args.extend(["--hostname", hostname])
+        container_args.append(image)
+        
+        container_id = subprocess.check_output(container_args).strip().decode('utf-8')
     except subprocess.CalledProcessError as e:
         error_embed = discord.Embed(
             title="❌ Error",
@@ -992,11 +976,11 @@ async def deploy_with_os(interaction, os_type, ram, cpu, disk, user_id, user, co
             container_name, 
             ssh_session_line, 
             ram_limit=ram, 
-            cpu_limit=cpu, 
-            disk_limit=disk,
+            cpu_limit=cpu,
             creator=str(interaction.user),
             expiry=expiry_date,
-            os_type=os_type_to_display_name(os_type)
+            os_type=os_type_to_display_name(os_type),
+            hostname=hostname
         )
         
         dm_embed = discord.Embed(
@@ -1007,7 +991,7 @@ async def deploy_with_os(interaction, os_type, ram, cpu, disk, user_id, user, co
         dm_embed.add_field(name="🔑 SSH Connection Command", value=f"```{ssh_session_line}```", inline=False)
         dm_embed.add_field(name="💾 RAM Allocation", value=f"{ram}GB", inline=True)
         dm_embed.add_field(name="🔥 CPU Cores", value=f"{cpu} cores", inline=True)
-        dm_embed.add_field(name="💽 Disk Space", value=f"{disk}GB", inline=True)
+        dm_embed.add_field(name="🏷️ Hostname", value=hostname if hostname else "Default", inline=True)
         dm_embed.add_field(name="🔒 Password", value="hk-i9", inline=True)
         dm_embed.set_footer(text="Keep this information safe and private!")
         
@@ -1048,17 +1032,17 @@ async def deploy_with_os(interaction, os_type, ram, cpu, disk, user_id, user, co
 @app_commands.describe(
     ram="RAM allocation in GB (max 96gb)",
     cpu="CPU cores (max 12)",
-    disk="Disk space in GB (max 968gb)",
     target_user="Discord user to assign the VPS to",
-    expiry="Time until expiry (e.g. 1d, 2h, 30m, 45s, 1y, 3M)"
+    expiry="Time until expiry (e.g. 1d, 2h, 30m, 45s, 1y, 3M)",
+    hostname="Custom hostname for the VPS"
 )
 async def create_vps(
     interaction: discord.Interaction, 
     ram: int = 16, 
-    cpu: int = 4, 
-    disk: int = 968,
+    cpu: int = 4,
     target_user: discord.User = None,
-    expiry: str = None
+    expiry: str = None,
+    hostname: str = None
 ):
     if interaction.user.id not in ADMIN_IDS:
         embed = discord.Embed(
@@ -1073,8 +1057,6 @@ async def create_vps(
         ram = 96000
     if cpu > 12:
         cpu = 12
-    if disk > 968:
-        disk = 968
     
     user_id = str(target_user.id) if target_user else str(interaction.user.id)
     user = str(target_user) if target_user else str(interaction.user)
@@ -1093,7 +1075,7 @@ async def create_vps(
     )
     
     async def os_selected_callback(interaction, selected_os):
-        await deploy_with_os(interaction, selected_os, ram, cpu, disk, user_id, user, container_name, expiry_date)
+        await deploy_with_os(interaction, selected_os, ram, cpu, user_id, user, container_name, expiry_date, hostname)
     
     view = OSSelectView(os_selected_callback)
     await interaction.response.send_message(embed=embed, view=view)
@@ -1237,7 +1219,6 @@ class TipsView(View):
                 "title": "🛠️ System Management",
                 "description": "• Update packages regularly: `apt update && apt upgrade`\n"
                               "• Monitor resources with `htop` or `top`\n"
-                              "• Check disk space with `df -h`\n"
                               "• View logs with `journalctl` or check `/var/log/`"
             },
             {
@@ -1369,15 +1350,15 @@ async def list_servers(interaction: discord.Interaction):
             status = "🔴 Offline"
         
         if len(parts) >= 9:
-            ram_limit, cpu_limit, disk_limit, creator, os_type, expiry = parts[3], parts[4], parts[5], parts[6], parts[7], parts[8]
+            ram_limit, cpu_limit, creator, os_type, expiry, hostname = parts[3], parts[4], parts[5], parts[6], parts[7], parts[8]
             
             embed.add_field(
                 name=f"🖥️ {container_id} ({status})",
                 value=f"💾 **RAM:** {ram_limit}GB\n"
                       f"🔥 **CPU:** {cpu_limit} cores\n"
-                      f"💽 **Disk:** {disk_limit}GB\n"
                       f"🧊 **OS:** {os_type}\n"
                       f"👑 **Created by:** {creator}\n"
+                      f"🏷️ **Hostname:** {hostname}\n"
                       f"⏱️ **Expires:** {expiry}",
                 inline=False
             )
@@ -1386,7 +1367,6 @@ async def list_servers(interaction: discord.Interaction):
                 name=f"🖥️ {container_id} ({status})",
                 value=f"💾 **RAM:** 16GB\n"
                       f"🔥 **CPU:** 4 cores\n"
-                      f"💽 **Disk:** 968GB\n"
                       f"🧊 **OS:** Ubuntu 22.04",
                 inline=False
             )
@@ -1493,258 +1473,305 @@ def remove_shared_user(container_name, user_id):
         lines = f.readlines()
     with open(ACCESS_FILE, 'w') as f:
         for line in lines:
-            if line.strip() != f"{container_name}|{user_id}":
-                f.write(line)
-
-def remove_all_shares(container_name):
-    if not os.path.exists(ACCESS_FILE):
-        return
-    with open(ACCESS_FILE, 'r') as f:
-        lines = f.readlines()
-    with open(ACCESS_FILE, 'w') as f:
-        for line in lines:
-            if not line.startswith(container_name + "|"):
+            if not (line.startswith(container_name + "|") and str(user_id) in line):
                 f.write(line)
 
 def has_access(user_id, container_name):
-    servers = get_user_servers(str(user_id))
-    for line in servers:
-        if container_name in line:
-            return True
-    return str(user_id) in get_shared_users(container_name)
+    if not os.path.exists(database_file):
+        return False
+    with open(database_file, 'r') as f:
+        for line in f:
+            parts = line.strip().split('|')
+            if len(parts) >= 2 and parts[1] == container_name and parts[0] == str(user_id):
+                return True
+    if not os.path.exists(ACCESS_FILE):
+        return False
+    with open(ACCESS_FILE, 'r') as f:
+        for line in f:
+            if line.startswith(container_name + "|") and str(user_id) in line:
+                return True
+    return False
 
-async def has_required_invites(user: discord.User, required: int):
-    invites = 0
-    for guild in user.mutual_guilds:
-        try:
-            all_invites = await guild.invites()
-            for invite in all_invites:
-                if invite.inviter and invite.inviter.id == user.id:
-                    invites += invite.uses
-        except:
-            continue
-    return invites >= required
-
-def has_required_boost(member: discord.Member, required: int):
-    return member.premium_since is not None and member.guild.premium_subscription_count >= required
-
-class RewardSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="🎉 Invite: 8 Invites = 16GB", value="invite_8"),
-            discord.SelectOption(label="🎉 Invite: 15 Invites = 32GB", value="invite_15"),
-            discord.SelectOption(label="🚀 Boost: 1 Boost = 16GB", value="boost_1"),
-            discord.SelectOption(label="🚀 Boost: 2 Boost = 32GB", value="boost_2"),
-        ]
-        super().__init__(placeholder="Select your reward plan", options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        value = self.values[0]
-        ram = 16000
-        cpu = 40
-        disk = 968
-        user = interaction.user
-        member = interaction.guild.get_member(user.id)
-
-        if value == "invite_8":
-            if not await has_required_invites(user, 8):
-                await interaction.response.send_message("❌ You need at least 8 invites to claim this reward.", ephemeral=True)
-                return
-
-        elif value == "invite_15":
-            ram = 32000
-            if not await has_required_invites(user, 15):
-                await interaction.response.send_message("❌ You need at least 15 invites to claim this reward.", ephemeral=True)
-                return
-
-        elif value == "boost_1":
-            if not has_required_boost(member, 1):
-                await interaction.response.send_message("❌ You must boost the server to claim this reward.", ephemeral=True)
-                return
-
-        elif value == "boost_2":
-            ram = 32000
-            if not has_required_boost(member, 2):
-                await interaction.response.send_message("❌ You must boost the server with 2 boosts to claim this reward.", ephemeral=True)
-                return
-
-        username = user.name.replace(" ", "_")
-        container_name = f"VPS_{username}_{generate_random_string(6)}"
-        expiry = format_expiry_date(parse_time_to_seconds("7d"))
-
-        async def os_selected(interaction2, os_type):
-            await deploy_with_os(interaction2, os_type, ram, cpu, disk, str(user.id), str(user.id), container_name, expiry)
-
+@bot.tree.command(name="sharevps", description="🤝 Share VPS access with another user")
+@app_commands.describe(container_name="The name of your container", target_user="The user to share access with")
+async def share_vps(interaction: discord.Interaction, container_name: str, target_user: discord.User):
+    user_id = str(interaction.user.id)
+    if not has_access(user_id, container_name):
         embed = discord.Embed(
-            title="📀 Select Operating System",
-            description="✅ Verified! Now choose your preferred OS.",
-            color=discord.Color.green()
+            title="❌ Access Denied",
+            description="You don't have access to this VPS.",
+            color=0xff0000
         )
-        await interaction.response.send_message(embed=embed, view=OSSelectView(os_selected), ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
 
-class RewardView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        self.add_item(RewardSelect())
+    shared_users = get_shared_users(container_name)
+    if len(shared_users) >= SHARE_LIMIT:
+        embed = discord.Embed(
+            title="❌ Share Limit Reached",
+            description=f"You can only share this VPS with up to {SHARE_LIMIT} users.",
+            color=0xff0000
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    if str(target_user.id) in shared_users:
+        embed = discord.Embed(
+            title="❌ Already Shared",
+            description=f"This VPS is already shared with {target_user.mention}.",
+            color=0xff0000
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    add_shared_user(container_name, target_user.id)
+    ssh_command = get_ssh_command_from_database(container_name)
+    
+    dm_embed = discord.Embed(
+        title="✅ VPS Access Shared",
+        description=f"You have been granted access to VPS instance `{container_name}`.",
+        color=0x00ff00
+    )
+    dm_embed.add_field(name="🔑 SSH Connection Command", value=f"```{ssh_command}```", inline=False)
+    dm_embed.add_field(name="🔒 Password", value="hk-i9", inline=True)
+    dm_embed.set_footer(text="Keep this information safe and private!")
+    
+    try:
+        await target_user.send(embed=dm_embed)
+        
+        success_embed = discord.Embed(
+            title="✅ VPS Access Shared",
+            description=f"VPS access for `{container_name}` has been shared with {target_user.mention}.",
+            color=0x00ff00
+        )
+        await interaction.response.send_message(embed=success_embed)
+        
+    except discord.Forbidden:
+        warning_embed = discord.Embed(
+            title="⚠️ Cannot Send DM",
+            description=f"VPS access has been shared, but I couldn't send a DM to {target_user.mention}. Please ensure their DMs are enabled.",
+            color=0xffaa00
+        )
+        await interaction.response.send_message(embed=warning_embed)
+
+@bot.tree.command(name="myshares", description="📋 List all users you've shared VPS access with")
+async def my_shares(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    servers = get_user_servers(user_id)
+    embed = discord.Embed(
+        title="📋 Your Shared VPS Access",
+        description="List of all users you've shared your VPS instances with",
+        color=0x00aaff
+    )
+    
+    found_shares = False
+    for server in servers:
+        parts = server.split('|')
+        container_name = parts[1]
+        shared_users = get_shared_users(container_name)
+        if shared_users:
+            found_shares = True
+            user_mentions = []
+            for user_id in shared_users:
+                try:
+                    user = await bot.fetch_user(int(user_id))
+                    user_mentions.append(user.mention)
+                except:
+                    user_mentions.append(f"User ID: {user_id}")
+            embed.add_field(
+                name=f"🖥️ {container_name}",
+                value=f"Shared with: {', '.join(user_mentions)}",
+                inline=False
+            )
+    
+    if not found_shares:
+        embed.add_field(
+            name="No Shares",
+            value="You haven't shared any VPS instances with other users.",
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="revokeshareall", description="🚫 Revoke all shared access from a VPS")
+@app_commands.describe(container_name="The name of your container")
+async def revoke_share_all(interaction: discord.Interaction, container_name: str):
+    user_id = str(interaction.user.id)
+    if not has_access(user_id, container_name):
+        embed = discord.Embed(
+            title="❌ Access Denied",
+            description="You don't have access to this VPS.",
+            color=0xff0000
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    shared_users = get_shared_users(container_name)
+    if not shared_users:
+        embed = discord.Embed(
+            title="❌ No Shares",
+            description=f"No users have shared access to `{container_name}`.",
+            color=0xff0000
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+
+    confirm_embed = discord.Embed(
+        title="⚠️ Confirm Revoke All Shares",
+        description=f"Are you sure you want to revoke access for ALL users from `{container_name}`? This action cannot be undone.",
+        color=0xffaa00
+    )
+    
+    class RevokeConfirmView(View):
+        def __init__(self):
+            super().__init__(timeout=60)
+        
+        @discord.ui.button(label="✅ Confirm", style=discord.ButtonStyle.danger)
+        async def confirm_revoke_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await interaction.response.defer(ephemeral=False)
+            
+            try:
+                if os.path.exists(ACCESS_FILE):
+                    with open(ACCESS_FILE, 'r') as f:
+                        lines = f.readlines()
+                    with open(ACCESS_FILE, 'w') as f:
+                        for line in lines:
+                            if not line.startswith(container_name + "|"):
+                                f.write(line)
+                
+                success_embed = discord.Embed(
+                    title="✅ All Shares Revoked",
+                    description=f"All shared access for `{container_name}` has been revoked.",
+                    color=0x00ff00
+                )
+                await interaction.followup.send(embed=success_embed)
+                
+                for child in self.children:
+                    child.disabled = True
+                
+            except Exception as e:
+                error_embed = discord.Embed(
+                    title="❌ Error",
+                    description=f"Failed to revoke shares: {str(e)}",
+                    color=0xff0000
+                )
+                await interaction.followup.send(embed=error_embed)
+        
+        @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
+        async def cancel_revoke_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await interaction.response.defer(ephemeral=False)
+            
+            embed = discord.Embed(
+                title="🚫 Operation Cancelled",
+                description="The revoke operation has been cancelled.",
+                color=0xffaa00
+            )
+            await interaction.followup.send(embed=embed)
+            
+            for child in self.children:
+                child.disabled = True
+    
+    view = RevokeConfirmView()
+    await interaction.response.send_message(embed=confirm_embed, view=view)
+
+@bot.tree.command(name="sharesof", description="👀 Admin: Check who has access to a user's VPS")
+@app_commands.describe(userid="The Discord user ID to check")
+async def shares_of(interaction: discord.Interaction, userid: str):
+    if interaction.user.id not in ADMIN_IDS:
+        embed = discord.Embed(
+            title="❌ Access Denied",
+            description="You don't have permission to use this command.",
+            color=0xff0000
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    servers = get_user_servers(userid)
+    embed = discord.Embed(
+        title=f"📋 Shared Access for User {userid}",
+        description=f"List of VPS instances owned by <@{userid}> and their shared users",
+        color=0x00aaff
+    )
+    
+    found_shares = False
+    for server in servers:
+        parts = server.split('|')
+        container_name = parts[1]
+        shared_users = get_shared_users(container_name)
+        if shared_users:
+            found_shares = True
+            user_mentions = []
+            for user_id in shared_users:
+                try:
+                    user = await bot.fetch_user(int(user_id))
+                    user_mentions.append(user.mention)
+                except:
+                    user_mentions.append(f"User ID: {user_id}")
+            embed.add_field(
+                name=f"🖥️ {container_name}",
+                value=f"Shared with: {', '.join(user_mentions)}",
+                inline=False
+            )
+    
+    if not found_shares:
+        embed.add_field(
+            name="No Shares",
+            value=f"User <@{userid}> has not shared any VPS instances with other users.",
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="create", description="🎁 Claim a VPS reward by invite or boost")
 async def create(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="🎁 VPS Reward Claim",
-        description="Select your reward type. Invite-based or Boost-based.",
-        color=discord.Color.blurple()
+        title="🎁 Claim Your VPS",
+        description="To claim a VPS reward, please contact an admin or follow the server invite/boost reward program guidelines.",
+        color=0x00aaff
     )
-    await interaction.response.send_message(embed=embed, view=RewardView(), ephemeral=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="manage", description="🧰 Manage your VPS using control panel")
-@app_commands.describe(container_name="The name of your VPS")
+@bot.tree.command(name="manage", description="🛠️ Manage your VPS using a control panel")
+@app_commands.describe(container_name="The name of your container")
 async def manage(interaction: discord.Interaction, container_name: str):
     user_id = str(interaction.user.id)
     if not has_access(user_id, container_name):
-        await interaction.response.send_message("❌ You don’t have access to this VPS.", ephemeral=True)
+        embed = discord.Embed(
+            title="❌ Access Denied",
+            description="You don't have access to this VPS.",
+            color=0xff0000
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
-    stats = get_container_stats(container_name)
     embed = discord.Embed(
-        title=f"🧰 Manage VPS {container_name}",
-        description="Select an option to manage your VPS. Initial usage stats are below.",
-        color=0x2b2d31
+        title="🛠️ VPS Control Panel",
+        description=f"Manage your VPS instance `{container_name}`",
+        color=0x00aaff
     )
-    embed.add_field(name="CPU Usage", value=stats['cpu'] or "Offline", inline=True)
-    embed.add_field(name="RAM Usage", value=stats['memory'] or "Offline", inline=True)
-    embed.add_field(name="Storage Usage", value="Offline", inline=True)
-
-    class ManageView(discord.ui.View):
+    
+    class ManageView(View):
         def __init__(self):
-            super().__init__(timeout=60)
+            super().__init__(timeout=300)
+        
+        @discord.ui.button(label="▶️ Start", style=discord.ButtonStyle.green)
+        async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await start_server(interaction, container_name)
+        
+        @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.red)
+        async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await stop_server(interaction, container_name)
+        
+        @discord.ui.button(label="🔄 Restart", style=discord.ButtonStyle.blurple)
+        async def restart_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await restart_server(interaction, container_name)
+        
+        @discord.ui.button(label="🔄 Regenerate SSH", style=discord.ButtonStyle.grey)
+        async def regen_ssh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await regen_ssh_command(interaction, container_name)
+    
+    view = ManageView()
+    await interaction.response.send_message(embed=embed, view=view)
 
-        @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
-        async def stop_button(self, interaction2, button): await stop_server(interaction2, container_name)
-
-        @discord.ui.button(label="Start", style=discord.ButtonStyle.success)
-        async def start_button(self, interaction2, button): await start_server(interaction2, container_name)
-
-        @discord.ui.button(label="Reinstall", style=discord.ButtonStyle.primary)
-        async def reinstall_button(self, interaction2, button):
-            await interaction2.response.send_message("🔧 Reinstall feature coming soon.", ephemeral=True)
-
-        @discord.ui.button(label="Get Usage", style=discord.ButtonStyle.primary)
-        async def usage_button(self, interaction2, button):
-            stats = get_container_stats(container_name)
-            embed = discord.Embed(
-                title=f"📊 VPS Usage for {container_name}",
-                description=f"CPU: {stats['cpu']}\nRAM: {stats['memory']}\nStatus: {stats['status']}",
-                color=0x00ff00
-            )
-            await interaction2.response.send_message(embed=embed, ephemeral=True)
-
-        @discord.ui.button(label="Status", style=discord.ButtonStyle.secondary)
-        async def status_button(self, interaction2, button):
-            status = get_container_stats(container_name)['status']
-            await interaction2.response.send_message(f"VPS Status: {status}", ephemeral=True)
-
-        @discord.ui.button(label="Get SSH Info", style=discord.ButtonStyle.secondary)
-        async def ssh_button(self, interaction2, button):
-            ssh = get_ssh_command_from_database(container_name)
-            if ssh:
-                await interaction2.response.send_message(f"🔑 SSH Command:\n```{ssh}```", ephemeral=True)
-            else:
-                await interaction2.response.send_message("No SSH session available.", ephemeral=True)
-
-    await interaction.response.send_message(embed=embed, view=ManageView(), ephemeral=True)
-
-@bot.tree.command(name="sharevps", description="👥 Share VPS access with another user")
-@app_commands.describe(container_name="Your VPS name", target_user="User to share/revoke access")
-async def sharevps(interaction: discord.Interaction, container_name: str, target_user: discord.User):
-    user_id = str(interaction.user.id)
-    if not has_access(user_id, container_name):
-        await interaction.response.send_message("❌ You don’t have access to this VPS.", ephemeral=True)
-        return
-
-    class ShareAction(discord.ui.Select):
-        def __init__(self):
-            options = [
-                discord.SelectOption(label="Add Access", description="Give access to the selected user", value="add"),
-                discord.SelectOption(label="Remove Access", description="Remove user's access", value="remove"),
-            ]
-            super().__init__(placeholder="Choose access action", options=options)
-
-        async def callback(self, interaction2):
-            if self.values[0] == "add":
-                add_shared_user(container_name, target_user.id)
-                await interaction2.response.send_message(f"✅ {target_user.mention} now has access to `{container_name}`.", ephemeral=True)
-            else:
-                remove_shared_user(container_name, target_user.id)
-                await interaction2.response.send_message(f"❌ {target_user.mention} no longer has access to `{container_name}`.", ephemeral=True)
-
-    view = discord.ui.View(timeout=30)
-    view.add_item(ShareAction())
-
-    await interaction.response.send_message(
-        f"👤 Choose what to do for user {target_user.mention} on VPS `{container_name}`:",
-        view=view,
-        ephemeral=True
-    )
-
-@bot.tree.command(name="myshares", description="📋 List all users you've shared VPS access with")
-async def myshares(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    if not os.path.exists(ACCESS_FILE):
-        await interaction.response.send_message("You haven't shared any VPS access yet.", ephemeral=True)
-        return
-
-    owned_vps = [line.split('|')[0] for line in get_user_servers(user_id)]
-    if not owned_vps:
-        await interaction.response.send_message("You don’t own any VPS instances.", ephemeral=True)
-        return
-
-    shared_data = {}
-    with open(ACCESS_FILE, 'r') as f:
-        for line in f:
-            container, shared_user = line.strip().split('|')
-            if container in owned_vps:
-                shared_data.setdefault(container, []).append(shared_user)
-
-    if not shared_data:
-        await interaction.response.send_message("You haven’t shared access to any of your VPS instances.", ephemeral=True)
-        return
-
-    embed = discord.Embed(title="👥 Shared VPS Access", color=0x00aaff)
-    for vps, users in shared_data.items():
-        display = "\n".join(f"<@{uid}>" for uid in users)
-        embed.add_field(name=f"📦 {vps}", value=display or "No users", inline=False)
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="revokeshareall", description="🧹 Remove all shared access from a VPS")
-@app_commands.describe(container_name="Your VPS name")
-async def revokeshareall(interaction: discord.Interaction, container_name: str):
-    user_id = str(interaction.user.id)
-    if not has_access(user_id, container_name):
-        await interaction.response.send_message("❌ You don’t have access to this VPS.", ephemeral=True)
-        return
-
-    remove_all_shares(container_name)
-    await interaction.response.send_message(f"🧹 All shared users removed from `{container_name}`.", ephemeral=True)
-
-@bot.tree.command(name="sharesof", description="🔍 Admin: Check who has access to someone’s VPS")
-@app_commands.describe(userid="The user ID to inspect")
-async def sharesof(interaction: discord.Interaction, userid: str):
-    if interaction.user.id not in ADMIN_IDS:
-        await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
-        return
-
-    owned_vps = [line.split('|')[0] for line in get_user_servers(userid)]
-    if not owned_vps:
-        await interaction.response.send_message("This user doesn’t own any VPS.", ephemeral=True)
-        return
-
-    embed = discord.Embed(title=f"🔍 VPS Shares of {userid}", color=0x00aaff)
-    for vps in owned_vps:
-        shared = get_shared_users(vps)
-        display = "\n".join(f"<@{uid}>" for uid in shared)
-        embed.add_field(name=vps, value=display or "No users", inline=False)
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
+if __name__ == "__main__":
 bot.run(TOKEN)
