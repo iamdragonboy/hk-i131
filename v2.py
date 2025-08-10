@@ -18,7 +18,7 @@ from typing import Optional, Literal
 
 TOKEN = ''
 RAM_LIMIT = '96g'
-SERVER_LIMIT = 1
+SERVER_LIMIT = 10
 database_file = 'database.txt'
 PUBLIC_IP = '138.68.79.95'
 
